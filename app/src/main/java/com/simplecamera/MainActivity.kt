@@ -196,12 +196,8 @@ class MainActivity : AppCompatActivity() {
                     val account = signedInAccount
                     if (account != null) {
                         lifecycleScope.launch {
-                            val uploaded = GooglePhotosUploader.upload(this@MainActivity, account, uri)
-                            val msg = if (uploaded) R.string.msg_photo_uploaded else R.string.msg_photo_saved
-                            Toast.makeText(this@MainActivity, getString(msg), Toast.LENGTH_SHORT).show()
+                            GooglePhotosUploader.upload(this@MainActivity, account, uri)
                         }
-                    } else {
-                        Toast.makeText(this@MainActivity, getString(R.string.msg_photo_saved), Toast.LENGTH_SHORT).show()
                     }
                 }
 
