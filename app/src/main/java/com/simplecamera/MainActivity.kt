@@ -3,6 +3,7 @@ package com.simplecamera
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.media.MediaActionSound
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
@@ -40,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
     private lateinit var cameraExecutor: ExecutorService
+    private lateinit var shutterSound: MediaActionSound
     private var currentMode = Mode.CAPTURE
     private var zoomRatio = 1f
     private var signedInAccount: GoogleSignInAccount? = null
@@ -73,6 +75,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         cameraExecutor = Executors.newSingleThreadExecutor()
+        shutterSound = MediaActionSound().also { it.load(MediaActionSound.SHUTTER_CLICK) }
 
         setupModeButtons()
         checkPermissionsAndStartCamera()
@@ -183,6 +186,7 @@ class MainActivity : AppCompatActivity() {
             contentValues
         ).build()
 
+        shutterSound.play(MediaActionSound.SHUTTER_CLICK)
         capture.takePicture(
             outputOptions,
             ContextCompat.getMainExecutor(this),
@@ -290,6 +294,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
+        shutterSound.release()
     }
 
     companion object {

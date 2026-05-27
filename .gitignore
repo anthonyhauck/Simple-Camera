@@ -4,3 +4,4 @@ build/
 app/build/
 local.properties
 *.iml
+client_secret*.json
