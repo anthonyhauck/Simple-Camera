@@ -41,7 +41,7 @@ class MainActivity : AppCompatActivity() {
     private var imageCapture: ImageCapture? = null
     private lateinit var cameraExecutor: ExecutorService
     private var currentMode = Mode.CAPTURE
-    private var linearZoom = 0f
+    private var zoomRatio = 1f
     private var signedInAccount: GoogleSignInAccount? = null
 
     private val requestPermissionsLauncher = registerForActivityResult(
@@ -220,12 +220,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun adjustZoom(delta: Float) {
         val cam = camera ?: return
-        linearZoom = (linearZoom + delta).coerceIn(0f, 1f)
-        cam.cameraControl.setLinearZoom(linearZoom)
-        cam.cameraInfo.zoomState.observe(this) { zoomState ->
-            if (currentMode == Mode.ZOOM) {
-                binding.statusText.text = "%.1fx".format(zoomState.zoomRatio)
-            }
+        zoomRatio = (zoomRatio + delta).coerceIn(ZOOM_MIN, ZOOM_MAX)
+        cam.cameraControl.setZoomRatio(zoomRatio)
+        if (currentMode == Mode.ZOOM) {
+            binding.statusText.text = "%.1fx".format(zoomRatio)
         }
     }
 
@@ -261,7 +259,7 @@ class MainActivity : AppCompatActivity() {
                     preview,
                     imageCapture
                 )
-                camera?.cameraControl?.setLinearZoom(linearZoom)
+                camera?.cameraControl?.setZoomRatio(zoomRatio)
             } catch (e: Exception) {
                 Toast.makeText(this, "Camera init failed: ${e.message}", Toast.LENGTH_LONG).show()
             }
@@ -296,5 +294,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val PHOTOS_SCOPE = "https://www.googleapis.com/auth/photoslibrary.appendonly"
+        const val ZOOM_MIN = 0.5f
+        const val ZOOM_MAX = 4.0f
     }
 }
