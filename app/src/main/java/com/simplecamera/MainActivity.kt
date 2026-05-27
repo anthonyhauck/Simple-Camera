@@ -3,7 +3,9 @@ package com.simplecamera
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
-import android.media.MediaActionSound
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
@@ -41,7 +43,6 @@ class MainActivity : AppCompatActivity() {
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
     private lateinit var cameraExecutor: ExecutorService
-    private lateinit var shutterSound: MediaActionSound
     private var currentMode = Mode.CAPTURE
     private var zoomRatio = 1f
     private var signedInAccount: GoogleSignInAccount? = null
@@ -75,7 +76,6 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         cameraExecutor = Executors.newSingleThreadExecutor()
-        shutterSound = MediaActionSound().also { it.load(MediaActionSound.SHUTTER_CLICK) }
 
         setupModeButtons()
         checkPermissionsAndStartCamera()
@@ -186,7 +186,7 @@ class MainActivity : AppCompatActivity() {
             contentValues
         ).build()
 
-        shutterSound.play(MediaActionSound.SHUTTER_CLICK)
+        playShutterClick()
         capture.takePicture(
             outputOptions,
             ContextCompat.getMainExecutor(this),
@@ -287,10 +287,46 @@ class MainActivity : AppCompatActivity() {
         binding.btnGoogleSignIn.text = account?.email ?: getString(R.string.btn_google_photos)
     }
 
+    private fun playShutterClick() {
+        val sampleRate = 44100
+        val durationMs = 40
+        val numSamples = sampleRate * durationMs / 1000
+        val samples = ShortArray(numSamples)
+        for (i in samples.indices) {
+            val t = i.toDouble() / sampleRate
+            val envelope = Math.exp(-t * 250.0)
+            val tone = Math.sin(2 * Math.PI * 3200 * t)
+            samples[i] = (envelope * tone * Short.MAX_VALUE * 0.9).toInt().toShort()
+        }
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(numSamples * 2)
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+        track.write(samples, 0, numSamples)
+        track.setNotificationMarkerPosition(numSamples)
+        track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
+            override fun onMarkerReached(t: AudioTrack) { t.release() }
+            override fun onPeriodicNotification(t: AudioTrack) {}
+        })
+        track.play()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
-        shutterSound.release()
     }
 
     companion object {
