@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Simple Camera</string>
+    <string name="mode_shutter">Shutter</string>
+    <string name="mode_brightness">Brightness</string>
+    <string name="mode_zoom">Zoom</string>
+    <string name="btn_google_photos">Google Photos</string>
+    <string name="msg_photo_saved">Saved</string>
+    <string name="msg_photo_uploaded">Saved + uploaded</string>
+    <string name="msg_capture_failed">Capture failed</string>
+    <string name="msg_camera_permission_required">Camera permission is required</string>
+    <string name="msg_sign_in_failed">Google sign-in failed</string>
+</resources>

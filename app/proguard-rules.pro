@@ -1,0 +1,4 @@
+-keep class com.google.android.gms.** { *; }
+-keep class okhttp3.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**

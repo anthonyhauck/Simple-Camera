@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/black">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/previewView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Brightness / zoom level indicator -->
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="28dp"
+        android:background="@drawable/status_background"
+        android:paddingHorizontal="20dp"
+        android:paddingVertical="8dp"
+        android:textColor="@color/white"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <!-- Google Photos sign-in / status -->
+    <TextView
+        android:id="@+id/btnGoogleSignIn"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="16dp"
+        android:background="@drawable/status_background"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="6dp"
+        android:text="@string/btn_google_photos"
+        android:textColor="@color/white"
+        android:textSize="11sp"
+        android:clickable="true"
+        android:focusable="true" />
+
+    <!-- Mode selector bar -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="48dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/btnShutter"
+            style="@style/ModeButton"
+            android:text="@string/mode_shutter" />
+
+        <TextView
+            android:id="@+id/btnBrightness"
+            style="@style/ModeButton"
+            android:text="@string/mode_brightness" />
+
+        <TextView
+            android:id="@+id/btnZoom"
+            style="@style/ModeButton"
+            android:text="@string/mode_zoom" />
+
+    </LinearLayout>
+
+</FrameLayout>

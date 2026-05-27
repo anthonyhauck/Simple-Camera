@@ -1,0 +1,298 @@
+package com.simplecamera
+
+import android.Manifest
+import android.content.ContentValues
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.provider.MediaStore
+import android.view.KeyEvent
+import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.Camera
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.Scope
+import com.simplecamera.databinding.ActivityMainBinding
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+class MainActivity : AppCompatActivity() {
+
+    enum class Mode { CAPTURE, BRIGHTNESS, ZOOM }
+
+    private lateinit var binding: ActivityMainBinding
+    private var camera: Camera? = null
+    private var imageCapture: ImageCapture? = null
+    private lateinit var cameraExecutor: ExecutorService
+    private var currentMode = Mode.CAPTURE
+    private var linearZoom = 0f
+    private var signedInAccount: GoogleSignInAccount? = null
+
+    private val requestPermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        if (permissions.all { it.value }) {
+            startCamera()
+        } else {
+            Toast.makeText(this, getString(R.string.msg_camera_permission_required), Toast.LENGTH_LONG).show()
+            finish()
+        }
+    }
+
+    private val signInLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        try {
+            signedInAccount = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+                .getResult(Exception::class.java)
+            updateSignInIndicator()
+        } catch (e: Exception) {
+            Toast.makeText(this, getString(R.string.msg_sign_in_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+
+        cameraExecutor = Executors.newSingleThreadExecutor()
+
+        setupModeButtons()
+        checkPermissionsAndStartCamera()
+        restoreGoogleSignIn()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemUI()
+    }
+
+    private fun hideSystemUI() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.apply {
+                hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            )
+        }
+    }
+
+    private fun setupModeButtons() {
+        binding.btnShutter.setOnClickListener { setMode(Mode.CAPTURE) }
+        binding.btnBrightness.setOnClickListener { setMode(Mode.BRIGHTNESS) }
+        binding.btnZoom.setOnClickListener { setMode(Mode.ZOOM) }
+        binding.btnGoogleSignIn.setOnClickListener { signInToGoogle() }
+        setMode(Mode.CAPTURE)
+    }
+
+    private fun setMode(mode: Mode) {
+        currentMode = mode
+        binding.btnShutter.isSelected = mode == Mode.CAPTURE
+        binding.btnBrightness.isSelected = mode == Mode.BRIGHTNESS
+        binding.btnZoom.isSelected = mode == Mode.ZOOM
+
+        binding.statusText.visibility = if (mode == Mode.CAPTURE) View.GONE else View.VISIBLE
+        if (mode != Mode.CAPTURE) refreshStatusText()
+    }
+
+    private fun refreshStatusText() {
+        val cam = camera ?: return
+        binding.statusText.text = when (currentMode) {
+            Mode.BRIGHTNESS -> {
+                val ev = cam.cameraInfo.exposureState.exposureCompensationIndex
+                "EV $ev"
+            }
+            Mode.ZOOM -> {
+                val ratio = cam.cameraInfo.zoomState.value?.zoomRatio ?: 1f
+                "%.1fx".format(ratio)
+            }
+            Mode.CAPTURE -> ""
+        }
+    }
+
+    // Intercept volume keys before audio system sees them
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            if (event.action == KeyEvent.ACTION_UP) return true
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                val isRepeat = event.repeatCount > 0
+                // For capture mode, only fire once per press (no repeat)
+                if (isRepeat && currentMode == Mode.CAPTURE) return true
+                if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) handleVolumeUp()
+                else handleVolumeDown()
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun handleVolumeUp() {
+        when (currentMode) {
+            Mode.CAPTURE -> takePhoto()
+            Mode.BRIGHTNESS -> adjustExposure(+1)
+            Mode.ZOOM -> adjustZoom(+0.1f)
+        }
+    }
+
+    private fun handleVolumeDown() {
+        when (currentMode) {
+            Mode.CAPTURE -> takePhoto()
+            Mode.BRIGHTNESS -> adjustExposure(-1)
+            Mode.ZOOM -> adjustZoom(-0.1f)
+        }
+    }
+
+    private fun takePhoto() {
+        val capture = imageCapture ?: return
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "IMG_$timestamp")
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/SimpleCamera")
+            }
+        }
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(
+            contentResolver,
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            contentValues
+        ).build()
+
+        capture.takePicture(
+            outputOptions,
+            ContextCompat.getMainExecutor(this),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    val uri = output.savedUri ?: return
+                    val account = signedInAccount
+                    if (account != null) {
+                        lifecycleScope.launch {
+                            val uploaded = GooglePhotosUploader.upload(this@MainActivity, account, uri)
+                            val msg = if (uploaded) R.string.msg_photo_uploaded else R.string.msg_photo_saved
+                            Toast.makeText(this@MainActivity, getString(msg), Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        Toast.makeText(this@MainActivity, getString(R.string.msg_photo_saved), Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+                override fun onError(exc: ImageCaptureException) {
+                    Toast.makeText(this@MainActivity, getString(R.string.msg_capture_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+
+    private fun adjustExposure(delta: Int) {
+        val cam = camera ?: return
+        val state = cam.cameraInfo.exposureState
+        if (!state.isExposureCompensationSupported) return
+        val range = state.exposureCompensationRange
+        val newIndex = (state.exposureCompensationIndex + delta).coerceIn(range.lower, range.upper)
+        cam.cameraControl.setExposureCompensationIndex(newIndex)
+        binding.statusText.text = "EV $newIndex"
+    }
+
+    private fun adjustZoom(delta: Float) {
+        val cam = camera ?: return
+        linearZoom = (linearZoom + delta).coerceIn(0f, 1f)
+        cam.cameraControl.setLinearZoom(linearZoom)
+        cam.cameraInfo.zoomState.observe(this) { zoomState ->
+            if (currentMode == Mode.ZOOM) {
+                binding.statusText.text = "%.1fx".format(zoomState.zoomRatio)
+            }
+        }
+    }
+
+    private fun checkPermissionsAndStartCamera() {
+        val needed = buildList {
+            add(Manifest.permission.CAMERA)
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        }
+        if (needed.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) {
+            startCamera()
+        } else {
+            requestPermissionsLauncher.launch(needed.toTypedArray())
+        }
+    }
+
+    private fun startCamera() {
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        providerFuture.addListener({
+            val provider = providerFuture.get()
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(binding.previewView.surfaceProvider)
+            }
+            imageCapture = ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                .build()
+            try {
+                provider.unbindAll()
+                camera = provider.bindToLifecycle(
+                    this,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    imageCapture
+                )
+                camera?.cameraControl?.setLinearZoom(linearZoom)
+            } catch (e: Exception) {
+                Toast.makeText(this, "Camera init failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun restoreGoogleSignIn() {
+        val account = GoogleSignIn.getLastSignedInAccount(this)
+        if (account != null && GoogleSignIn.hasPermissions(account, Scope(PHOTOS_SCOPE))) {
+            signedInAccount = account
+            updateSignInIndicator()
+        }
+    }
+
+    private fun signInToGoogle() {
+        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestScopes(Scope(PHOTOS_SCOPE))
+            .requestEmail()
+            .build()
+        signInLauncher.launch(GoogleSignIn.getClient(this, gso).signInIntent)
+    }
+
+    private fun updateSignInIndicator() {
+        val account = signedInAccount
+        binding.btnGoogleSignIn.text = account?.email ?: getString(R.string.btn_google_photos)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        cameraExecutor.shutdown()
+    }
+
+    companion object {
+        const val PHOTOS_SCOPE = "https://www.googleapis.com/auth/photoslibrary.appendonly"
+    }
+}
