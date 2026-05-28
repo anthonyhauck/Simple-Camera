@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
@@ -264,7 +265,6 @@ class MainActivity : AppCompatActivity() {
             }
             imageCapture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                .setOutputImageFormat(ImageCapture.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .build()
             try {
                 provider.unbindAll()
@@ -313,13 +313,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
-        val plane = image.planes[0]
-        val buffer = plane.buffer.apply { rewind() }
-        val paddedWidth = plane.rowStride / plane.pixelStride
-        val bitmap = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
-        bitmap.copyPixelsFromBuffer(buffer)
-        return if (paddedWidth == image.width) bitmap
-               else Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+        val buffer = image.planes[0].buffer.apply { rewind() }
+        val bytes = ByteArray(buffer.remaining())
+        buffer.get(bytes)
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     }
 
     private fun rotateBitmap(bitmap: Bitmap, degrees: Int): Bitmap {
