@@ -224,7 +224,7 @@ class MainActivity : AppCompatActivity() {
         val state = cam.cameraInfo.exposureState
         if (!state.isExposureCompensationSupported) return
         val range = state.exposureCompensationRange
-        val newIndex = (state.exposureCompensationIndex + delta).coerceIn(range.lower, range.upper)
+        val newIndex = (state.exposureCompensationIndex + delta).coerceIn(-30, range.upper)
         cam.cameraControl.setExposureCompensationIndex(newIndex)
         binding.statusText.text = "EV $newIndex"
     }
