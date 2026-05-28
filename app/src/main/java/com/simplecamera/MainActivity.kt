@@ -3,6 +3,12 @@ package com.simplecamera
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Matrix
+import android.graphics.Paint
 import android.media.AudioAttributes
 import android.media.SoundPool
 import android.os.Build
@@ -19,6 +25,7 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
@@ -46,6 +53,8 @@ class MainActivity : AppCompatActivity() {
     private var shutterSoundId = 0
     private var currentMode = Mode.CAPTURE
     private var zoomRatio = 1f
+    private var requestedEVIndex = 0
+    private var softwareEVStops = 0f
     private var signedInAccount: GoogleSignInAccount? = null
 
     private val requestPermissionsLauncher = registerForActivityResult(
@@ -137,10 +146,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshStatusText() {
         val cam = camera ?: return
         binding.statusText.text = when (currentMode) {
-            Mode.BRIGHTNESS -> {
-                val ev = cam.cameraInfo.exposureState.exposureCompensationIndex
-                "EV $ev"
-            }
+            Mode.BRIGHTNESS -> "EV $requestedEVIndex"
             Mode.ZOOM -> {
                 val ratio = cam.cameraInfo.zoomState.value?.zoomRatio ?: 1f
                 "%.1fx".format(ratio)
@@ -183,38 +189,29 @@ class MainActivity : AppCompatActivity() {
 
     private fun takePhoto() {
         val capture = imageCapture ?: return
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "IMG_$timestamp")
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/SimpleCamera")
-            }
-        }
-        val outputOptions = ImageCapture.OutputFileOptions.Builder(
-            contentResolver,
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            contentValues
-        ).build()
-
+        val stops = softwareEVStops
         playShutterClick()
         capture.takePicture(
-            outputOptions,
-            ContextCompat.getMainExecutor(this),
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    val uri = output.savedUri ?: return
+            cameraExecutor,
+            object : ImageCapture.OnImageCapturedCallback() {
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    val bitmap = imageProxyToBitmap(image)
+                    val rotation = image.imageInfo.rotationDegrees
+                    image.close()
+
+                    val rotated = rotateBitmap(bitmap, rotation)
+                    val final = if (stops > 0f) applyBrightness(rotated, stops) else rotated
+                    val uri = savePng(final)
+
                     val account = signedInAccount
-                    if (account != null) {
+                    if (account != null && uri != null) {
                         lifecycleScope.launch {
                             GooglePhotosUploader.upload(this@MainActivity, account, uri)
                         }
                     }
                 }
 
-                override fun onError(exc: ImageCaptureException) {
-                    Toast.makeText(this@MainActivity, getString(R.string.msg_capture_failed), Toast.LENGTH_SHORT).show()
-                }
+                override fun onError(exception: ImageCaptureException) { }
             }
         )
     }
@@ -224,9 +221,15 @@ class MainActivity : AppCompatActivity() {
         val state = cam.cameraInfo.exposureState
         if (!state.isExposureCompensationSupported) return
         val range = state.exposureCompensationRange
-        val newIndex = (state.exposureCompensationIndex + delta).coerceIn(-30, range.upper)
-        cam.cameraControl.setExposureCompensationIndex(newIndex)
-        binding.statusText.text = "EV $newIndex"
+        val stepSize = state.exposureCompensationStep.toFloat()
+
+        requestedEVIndex = (requestedEVIndex + delta).coerceIn(-30, range.upper)
+        val hardwareIndex = requestedEVIndex.coerceIn(range.lower, range.upper)
+        cam.cameraControl.setExposureCompensationIndex(hardwareIndex)
+
+        softwareEVStops = maxOf(0f, (range.lower - requestedEVIndex) * stepSize)
+        updateBrightnessOverlay(softwareEVStops)
+        binding.statusText.text = "EV $requestedEVIndex"
     }
 
     private fun adjustZoom(delta: Float) {
@@ -261,6 +264,7 @@ class MainActivity : AppCompatActivity() {
             }
             imageCapture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                .setOutputImageFormat(ImageCapture.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .build()
             try {
                 provider.unbindAll()
@@ -300,6 +304,69 @@ class MainActivity : AppCompatActivity() {
 
     private fun playShutterClick() {
         soundPool.play(shutterSoundId, 1f, 1f, 1, 0, 1f)
+    }
+
+    private fun updateBrightnessOverlay(stops: Float) {
+        val alpha = if (stops <= 0f) 0f
+                    else (1f - Math.pow(2.0, -stops.toDouble()).toFloat()).coerceIn(0f, 0.95f)
+        binding.brightnessOverlay.alpha = alpha
+    }
+
+    private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
+        val plane = image.planes[0]
+        val buffer = plane.buffer.apply { rewind() }
+        val paddedWidth = plane.rowStride / plane.pixelStride
+        val bitmap = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
+        bitmap.copyPixelsFromBuffer(buffer)
+        return if (paddedWidth == image.width) bitmap
+               else Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+    }
+
+    private fun rotateBitmap(bitmap: Bitmap, degrees: Int): Bitmap {
+        if (degrees == 0) return bitmap
+        val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
+
+    private fun applyBrightness(bitmap: Bitmap, stops: Float): Bitmap {
+        val scale = Math.pow(2.0, -stops.toDouble()).toFloat()
+        val cm = ColorMatrix(floatArrayOf(
+            scale, 0f,    0f,    0f, 0f,
+            0f,    scale, 0f,    0f, 0f,
+            0f,    0f,    scale, 0f, 0f,
+            0f,    0f,    0f,    1f, 0f
+        ))
+        val result = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+        Canvas(result).drawBitmap(bitmap, 0f, 0f, Paint().apply {
+            colorFilter = ColorMatrixColorFilter(cm)
+        })
+        return result
+    }
+
+    private fun savePng(bitmap: Bitmap): android.net.Uri? {
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "IMG_$timestamp")
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/SimpleCamera")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+            ?: return null
+        return try {
+            contentResolver.openOutputStream(uri)?.use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                contentResolver.update(uri, ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }, null, null)
+            }
+            uri
+        } catch (e: Exception) {
+            contentResolver.delete(uri, null, null)
+            null
+        }
     }
 
     override fun onDestroy() {
